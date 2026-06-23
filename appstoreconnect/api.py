@@ -312,7 +312,7 @@ class Api:
 				 	payload.get('errors', [])[0].get('status', None)
 				)
 			return payload
-		elif content_type == 'application/a-gzip':
+		elif content_type in ('application/a-gzip', 'application/gzip'):
 			# TODO implement stream decompress
 			data_gz = b""
 			for chunk in r.iter_content(1024 * 1024):
