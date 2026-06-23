@@ -1,6 +1,8 @@
 import requests
 import jwt
 import gzip
+import io
+import zipfile
 import platform
 import hashlib
 from collections import defaultdict
@@ -319,7 +321,19 @@ class Api:
 				if chunk:
 					data_gz = data_gz + chunk
 
-			data = gzip.decompress(data_gz)
+			# App Store Connect labels report downloads as application/gzip but
+			# may ship either a gzip stream or a zip archive. Sniff magic bytes
+			# instead of trusting the content-type.
+			if data_gz[:2] == b'\x1f\x8b':
+				data = gzip.decompress(data_gz)
+			elif data_gz[:2] == b'PK':
+				with zipfile.ZipFile(io.BytesIO(data_gz)) as zf:
+					names = zf.namelist()
+					if not names:
+						raise APIError("Empty zip archive in report response")
+					data = zf.read(names[0])
+			else:
+				raise APIError("Unrecognized report archive format: %r" % data_gz[:4])
 			return data.decode("utf-8")
 		else:
 			if not 200 <= r.status_code <= 299:
