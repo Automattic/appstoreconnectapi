@@ -322,18 +322,23 @@ class Api:
 					data_gz = data_gz + chunk
 
 			# App Store Connect labels report downloads as application/gzip but
-			# may ship either a gzip stream or a zip archive. Sniff magic bytes
-			# instead of trusting the content-type.
-			if data_gz[:2] == b'\x1f\x8b':
-				data = gzip.decompress(data_gz)
-			elif data_gz[:2] == b'PK':
-				with zipfile.ZipFile(io.BytesIO(data_gz)) as zf:
-					names = zf.namelist()
-					if not names:
-						raise APIError("Empty zip archive in report response")
-					data = zf.read(names[0])
+			# ships various nested containers: a bare gzip stream, a zip archive,
+			# or a zip archive whose member is itself gzipped. Unwrap each layer
+			# by sniffing magic bytes instead of trusting the content-type.
+			data = data_gz
+			for _ in range(5):  # guard against pathological nesting
+				if data[:2] == b'\x1f\x8b':            # gzip
+					data = gzip.decompress(data)
+				elif data[:2] == b'PK':                # zip
+					with zipfile.ZipFile(io.BytesIO(data)) as zf:
+						names = zf.namelist()
+						if not names:
+							raise APIError("Empty zip archive in report response")
+						data = zf.read(names[0])
+				else:
+					break
 			else:
-				raise APIError("Unrecognized report archive format: %r" % data_gz[:4])
+				raise APIError("Report archive nested too deeply")
 			return data.decode("utf-8")
 		else:
 			if not 200 <= r.status_code <= 299:
