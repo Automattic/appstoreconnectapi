@@ -1,6 +1,8 @@
 import requests
 import jwt
 import gzip
+import io
+import zipfile
 import platform
 import hashlib
 from collections import defaultdict
@@ -270,6 +272,27 @@ class Api:
 			url = "%s%ssort=%s" % (url, separator, sort)
 		return url
 
+	@staticmethod
+	def _unwrap_report_archive(data, max_depth=5):
+		# App Store Connect labels report downloads as application/gzip but
+		# ships various nested containers: a bare gzip stream, a zip archive,
+		# or a zip archive whose member is itself gzipped. Unwrap each layer
+		# by sniffing magic bytes instead of trusting the content-type.
+		for _ in range(max_depth):  # guard against pathological nesting
+			if data[:2] == b'\x1f\x8b':            # gzip
+				data = gzip.decompress(data)
+			elif data[:2] == b'PK':                # zip
+				with zipfile.ZipFile(io.BytesIO(data)) as zf:
+					names = zf.namelist()
+					if not names:
+						raise APIError("Empty zip archive in report response")
+					data = zf.read(names[0])
+			else:
+				break
+		else:
+			raise APIError("Report archive nested too deeply")
+		return data
+
 	def _api_call(self, url, method=HttpMethod.GET, post_data=None):
 		headers = {"Authorization": "Bearer %s" % self.token}
 		if self._debug:
@@ -312,15 +335,13 @@ class Api:
 				 	payload.get('errors', [])[0].get('status', None)
 				)
 			return payload
-		elif content_type == 'application/a-gzip':
-			# TODO implement stream decompress
+		elif content_type in ('application/a-gzip', 'application/gzip'):
 			data_gz = b""
 			for chunk in r.iter_content(1024 * 1024):
 				if chunk:
 					data_gz = data_gz + chunk
 
-			data = gzip.decompress(data_gz)
-			return data.decode("utf-8")
+			return self._unwrap_report_archive(data_gz).decode("utf-8")
 		else:
 			if not 200 <= r.status_code <= 299:
 				raise APIError("HTTP error [%d][%s]" % (r.status_code, r.content))
